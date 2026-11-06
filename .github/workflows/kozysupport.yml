@@ -1,0 +1,567 @@
+# KozySupport: build the branded client from an upstream RustDesk release plus
+# the commits on the kozy branch, then publish it to cdn.kozyops.com after a
+# human approves. See kozy/README.md.
+#
+#   schedule          daily: builds the latest upstream release if it is not
+#                     what cdn.kozyops.com already serves
+#   workflow_dispatch builds any upstream tag, e.g. to rebuild after a change
+#                     to the kozy branch
+#
+# Nothing reaches customers until the `publish` job's `release` environment is
+# approved. Installers from the build jobs are on the run page for testing
+# first.
+name: KozySupport
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: Upstream RustDesk tag to build (default the latest release)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kozysupport
+  cancel-in-progress: false
+
+env:
+  CDN: https://cdn.kozyops.com/public/remote-support
+  MACOS_P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      build: ${{ steps.target.outputs.build }}
+      tag: ${{ steps.target.outputs.tag }}
+      version: ${{ steps.versions.outputs.version }}
+      flutter: ${{ steps.versions.outputs.flutter }}
+      rust: ${{ steps.versions.outputs.rust }}
+      mac_rust: ${{ steps.versions.outputs.mac_rust }}
+      llvm: ${{ steps.versions.outputs.llvm }}
+      vcpkg: ${{ steps.versions.outputs.vcpkg }}
+      bridge_rust: ${{ steps.versions.outputs.bridge_rust }}
+      bridge_flutter: ${{ steps.versions.outputs.bridge_flutter }}
+      frb: ${{ steps.versions.outputs.frb }}
+      cargo_expand: ${{ steps.versions.outputs.cargo_expand }}
+    steps:
+      - name: Pick the upstream release
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT: ${{ inputs.upstream }}
+        run: |
+          tag="${INPUT:-$(gh api repos/rustdesk/rustdesk/releases/latest --jq .tag_name)}"
+          served="$(curl -fsS "$CDN/latest.json" | jq -r '.url | split("/") | last' || true)"
+          echo "upstream=$tag served=${served:-none}"
+          build=true
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$served" = "$tag" ]; then build=false; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        if: steps.target.outputs.build == 'true'
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Apply KozySupport commits
+        if: steps.target.outputs.build == 'true'
+        run: kozy/apply.sh "${{ steps.target.outputs.tag }}"
+      - name: Open an issue when the commits no longer apply
+        if: failure() && steps.target.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          title="Rebase the kozy branch onto RustDesk ${TAG}"
+          if [ -z "$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[].number')" ]; then
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body "The KozySupport commits do not apply cleanly to upstream ${TAG}, so no build ran. Rebase \`kozy\` onto \`${TAG}\` by hand, update \`kozy/BASE\`, and push. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fi
+      - name: Read upstream build versions
+        id: versions
+        if: steps.target.outputs.build == 'true'
+        run: |
+          fb=.github/workflows/flutter-build.yml; br=.github/workflows/bridge.yml
+          {
+            echo "version=$(yq '.env.VERSION' $fb)"
+            echo "flutter=$(yq '.env.FLUTTER_VERSION' $fb)"
+            echo "rust=$(yq '.env.RUST_VERSION' $fb)"
+            echo "mac_rust=$(yq '.env.MAC_RUST_VERSION' $fb)"
+            echo "llvm=$(yq '.env.LLVM_VERSION' $fb)"
+            echo "vcpkg=$(yq '.env.VCPKG_COMMIT_ID' $fb)"
+            echo "bridge_rust=$(yq '.env.RUST_VERSION' $br)"
+            echo "frb=$(yq '.env.FLUTTER_RUST_BRIDGE_VERSION' $br)"
+            echo "cargo_expand=$(yq '.env.CARGO_EXPAND_VERSION' $br)"
+            echo "bridge_flutter=$(yq '.jobs.generate_bridge.strategy.matrix.job[] | select(.["artifact-name"] == "bridge-artifact") | .["flutter-version"]' $br)"
+          } | tee -a "$GITHUB_OUTPUT"
+      - name: Package the source
+        if: steps.target.outputs.build == 'true'
+        run: tar --exclude=.git -czf "kozysupport-${{ steps.versions.outputs.version }}-source.tar.gz" .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.target.outputs.build == 'true'
+        with:
+          name: source
+          path: kozysupport-*-source.tar.gz
+          if-no-files-found: error
+
+  bridge:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - run: kozy/apply.sh "${{ needs.plan.outputs.tag }}"
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake curl gcc git g++ libclang-dev libgtk-3-dev llvm-dev nasm ninja-build pkg-config wget
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ needs.plan.outputs.bridge_rust }}
+          targets: x86_64-unknown-linux-gnu
+          components: rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: bridge-ubuntu-22.04
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: ${{ needs.plan.outputs.bridge_flutter }}
+          cache: true
+      - name: Generate the bridge
+        run: |
+          cargo install cargo-expand --version ${{ needs.plan.outputs.cargo_expand }} --locked
+          cargo install flutter_rust_bridge_codegen --version ${{ needs.plan.outputs.frb }} --features "uuid" --locked
+          if [[ "${{ needs.plan.outputs.bridge_flutter }}" == "3.22.3" ]]; then
+            sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          fi
+          pushd flutter && flutter pub get && popd
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bridge
+          path: |
+            ./src/bridge_generated.rs
+            ./src/bridge_generated.io.rs
+            ./flutter/lib/generated_bridge.dart
+            ./flutter/lib/generated_bridge.freezed.dart
+            ./flutter/macos/Runner/bridge_generated.h
+            ./flutter/ios/Runner/bridge_generated.h
+
+  windows:
+    needs: [plan, bridge]
+    runs-on: windows-2022
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      FLUTTER_VERSION: ${{ needs.plan.outputs.flutter }}
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - shell: bash
+        run: kozy/apply.sh "${{ needs.plan.outputs.tag }}" && python3 kozy/rebrand.py windows
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge
+          path: ./
+      - uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ needs.plan.outputs.llvm }}
+      - uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+      - name: Replace engine with rustdesk custom flutter engine
+        run: |
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+      - name: Patch flutter
+        shell: bash
+        run: |
+          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
+          cd $(dirname $(dirname $(which flutter)))
+          if [[ "3.24.5" == "$FLUTTER_VERSION" ]]; then git apply flutter_3.24.4_dropdown_menu_enableFilter.diff; fi
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ needs.plan.outputs.rust }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: windows-2022
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ needs.plan.outputs.vcpkg }}
+          doNotCache: false
+      - name: Install vcpkg dependencies
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "== $f"; cat "$f"; done
+            exit 1
+          fi
+      - name: Build
+        run: |
+          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+      - name: Give the self-extractor the app's version resource
+        continue-on-error: true
+        shell: bash
+        run: |
+          runner_res=$(find . -name "Runner.res" | head -1)
+          [ -n "$runner_res" ] && cp "$runner_res" ./libs/portable/Runner.res
+      - name: Build self-extracting executable
+        shell: bash
+        run: |
+          sed -i '/dpiAware/d' res/manifest.xml
+          pushd ./libs/portable
+          pip3 install -r requirements.txt
+          python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
+          popd
+          mkdir -p ./out
+          mv ./target/release/rustdesk-portable-packer.exe "./out/kozysupport-${VERSION}-x86_64.exe"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-x86_64
+          path: ./out/kozysupport-*.exe
+          if-no-files-found: error
+
+  macos:
+    needs: [plan, bridge]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, target: x86_64-apple-darwin, os: macos-15-intel, build-args: "" }
+          - { arch: aarch64, target: aarch64-apple-darwin, os: macos-14, build-args: "--screencapturekit" }
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      FLUTTER_VERSION: ${{ needs.plan.outputs.flutter }}
+      APP: ./flutter/build/macos/Build/Products/Release/KozySupport.app
+      DMG: kozysupport-${{ needs.plan.outputs.version }}-${{ matrix.arch }}.dmg
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - run: kozy/apply.sh "${{ needs.plan.outputs.tag }}" && python3 kozy/rebrand.py macos
+      - name: Import the codesign cert
+        if: env.MACOS_P12_BASE64 != ''
+        uses: apple-actions/import-codesign-certs@253ddeeac23f2bdad1646faac5c8c2832e800071 # v1
+        with:
+          p12-file-base64: ${{ secrets.MACOS_P12_BASE64 }}
+          p12-password: ${{ secrets.MACOS_P12_PASSWORD }}
+          keychain: kozysupport
+      - name: Import notarize key
+        if: env.MACOS_P12_BASE64 != ''
+        uses: timheuer/base64-to-file@adaa40c0c581f276132199d4cf60afa07ce60eac # v1.2
+        with:
+          fileName: notarize.json
+          fileDir: ${{ github.workspace }}
+          encodedString: ${{ secrets.MACOS_NOTARIZE_JSON }}
+      - name: Install rcodesign
+        if: env.MACOS_P12_BASE64 != ''
+        run: |
+          pushd /tmp
+          wget -q https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.22.0/apple-codesign-0.22.0-macos-universal.tar.gz
+          tar -zxf apple-codesign-0.22.0-macos-universal.tar.gz
+          mv apple-codesign-0.22.0-macos-universal/rcodesign /usr/local/bin
+          popd
+      - name: Install build runtime
+        run: |
+          brew install llvm create-dmg
+          command -v pkg-config >/dev/null || brew install pkg-config
+          wget -q https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
+          unzip -q nasm-2.16.03-macosx.zip
+          sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+      - name: Patch flutter
+        run: |
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+          if [[ "3.24.5" == "$FLUTTER_VERSION" ]]; then git apply "$GITHUB_WORKSPACE/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"; fi
+          cd "$(dirname "$(which flutter)")"
+          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' ../packages/flutter/lib/src/scheduler/binding.dart
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ needs.plan.outputs.mac_rust }}
+          targets: ${{ matrix.target }}
+          components: rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: ${{ matrix.os }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge
+          path: ./
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgGitCommitId: ${{ needs.plan.outputs.vcpkg }}
+          doNotCache: false
+      - name: Install vcpkg dependencies
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "== $f"; cat "$f"; done
+            exit 1
+          fi
+      - name: Build
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+            MIN_MACOS_VERSION="12.3"
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+            sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+            sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+            echo "MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}" >> "$GITHUB_ENV"
+          fi
+          ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.build-args }}
+          test -x "$APP/Contents/MacOS/KozySupport"
+      - name: Sign and notarize the app
+        if: env.MACOS_P12_BASE64 != ''
+        run: |
+          security default-keychain -s kozysupport.keychain
+          security unlock-keychain -p "${{ secrets.MACOS_P12_PASSWORD }}" kozysupport.keychain
+          bash ./.github/scripts/sign-macos-app.sh "$APP" "${{ secrets.MACOS_CODESIGN_IDENTITY }}" ./flutter/macos/Runner/Release.entitlements
+      - name: Create dmg
+        run: |
+          CREATE_DMG="$(readlink -f "$(command -v create-dmg)")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          create-dmg --volname KozySupport --icon "KozySupport.app" 200 190 --hide-extension "KozySupport.app" --window-size 800 400 --app-drop-link 600 185 "$DMG" "$APP"
+      - name: Sign and notarize the dmg
+        if: env.MACOS_P12_BASE64 != ''
+        run: |
+          codesign --force --options runtime -s "${{ secrets.MACOS_CODESIGN_IDENTITY }}" --deep --strict "$DMG" -vvv
+          rcodesign notary-submit --api-key-path "$GITHUB_WORKSPACE/notarize.json" --staple "$DMG"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-${{ matrix.arch }}
+          path: ${{ env.DMG }}
+          if-no-files-found: error
+
+  linux:
+    needs: [plan, bridge]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      FLUTTER_VERSION: ${{ needs.plan.outputs.flutter }}
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /opt/ghc /usr/local/lib/android /usr/share/dotnet
+          sudo apt-get update -y
+          sudo apt-get install -y nasm
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - run: kozy/apply.sh "${{ needs.plan.outputs.tag }}" && python3 kozy/rebrand.py linux
+      - uses: pierotofy/set-swap-space@49819abfb41bd9b44fb781159c033dba90353a7c # v1.0
+        with:
+          swap-size-gb: 12
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ needs.plan.outputs.rust }}
+          targets: x86_64-unknown-linux-gnu
+          components: rustfmt
+      - name: Save Rust toolchain version
+        run: echo "RUST_TOOLCHAIN_VERSION=$(cargo --version | awk '{print $2}')" >> "$GITHUB_ENV"
+      - name: Disable rust bridge build
+        run: sed -i "s/\[\"cdylib\", \"staticlib\", \"rlib\"\]/\[\"cdylib\"\]/g" Cargo.toml
+      - uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ needs.plan.outputs.vcpkg }}
+          doNotCache: false
+      - name: Install vcpkg dependencies
+        run: |
+          sudo apt install -y libva-dev
+          if ! $VCPKG_ROOT/vcpkg install --triplet x64-linux --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "== $f"; cat "$f"; done
+            exit 1
+          fi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge
+          path: ./
+      # Upstream builds on Ubuntu 18.04 so the packages run on old glibc.
+      - uses: rustdesk-org/run-on-arch-action@d3fcfbb632b84cf7f6bc772bfaaa2c2f4f8789a8 # no release tag; commit 2026-05-26
+        with:
+          arch: x86_64
+          distro: ubuntu18.04
+          githubToken: ${{ github.token }}
+          dockerRunArgs: |
+            --volume "${PWD}:/workspace"
+            --volume "/opt/artifacts:/opt/artifacts"
+          shell: /bin/bash
+          install: |
+            apt-get update -y
+            apt-get install -y build-essential clang cmake curl gcc git g++ libayatana-appindicator3-dev \
+              libasound2-dev libclang-10-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev \
+              libpulse-dev libva-dev libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev \
+              llvm-10-dev nasm ninja-build pkg-config tree python3 rpm unzip wget xz-utils libssl-dev
+            apt-get remove -y libopus-dev || true
+          run: |
+            set -e
+            git config --global --add safe.directory "*"
+            pushd /opt
+            wget -q -O rust.tar.gz https://static.rust-lang.org/dist/rust-${{ env.RUST_TOOLCHAIN_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
+            tar -zxf rust.tar.gz && rm rust.tar.gz
+            (cd rust-${{ env.RUST_TOOLCHAIN_VERSION }}-x86_64-unknown-linux-gnu && ./install.sh >/dev/null)
+            wget -q https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz
+            tar xf flutter_linux_${{ env.FLUTTER_VERSION }}-stable.tar.xz
+            export PATH=/opt/flutter/bin:$PATH
+            if [[ "3.24.5" == "${{ env.FLUTTER_VERSION }}" ]]; then
+              (cd /opt/flutter && git apply /workspace/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff)
+            fi
+            popd
+            cd /workspace
+            export VCPKG_ROOT=/opt/artifacts/vcpkg CARGO_INCREMENTAL=0 DEB_ARCH=amd64
+            cargo build --locked --lib --features hwcodec,flutter,unix-file-copy-paste --release
+            rm -rf target/release/deps target/release/build
+            python3 ./build.py --flutter --skip-cargo
+            mv "kozysupport-${{ env.VERSION }}.deb" "kozysupport-${{ env.VERSION }}-x86_64.deb"
+            HBB=$(pwd) rpmbuild ./res/rpm-flutter.spec -bb
+            mv ~/rpmbuild/RPMS/x86_64/kozysupport-*.rpm "/workspace/kozysupport-${{ env.VERSION }}-x86_64.rpm"
+      - name: Check the packages carry the KozySupport names
+        run: |
+          deb="kozysupport-${VERSION}-x86_64.deb"
+          files="$(dpkg-deb -c "$deb")"
+          for f in ./usr/share/kozysupport/kozysupport ./usr/share/kozysupport/files/systemd/kozysupport.service ./usr/share/applications/kozysupport.desktop; do
+            grep -q " $f\$" <<<"$files" || { echo "::error::$deb is missing $f"; exit 1; }
+          done
+          [ "$(dpkg-deb -f "$deb" Package)" = kozysupport ]
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-x86_64
+          path: |
+            kozysupport-*.deb
+            kozysupport-*.rpm
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, windows, macos, linux]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      V: ${{ needs.plan.outputs.version }}
+      BUCKET: s3://kozy-cdn/public/remote-support
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - run: kozy/apply.sh "${{ needs.plan.outputs.tag }}"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: 'python -m pip install --only-binary=:all: --require-hashes -r res/update/update_metadata_requirements.txt'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: "*-*"
+          path: out
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source
+          path: out
+      - name: Sign update metadata
+        env:
+          RUSTDESK_UPDATE_ED25519_SEED: ${{ secrets.RUSTDESK_UPDATE_ED25519_SEED }}
+          RUSTDESK_UPDATE_ED25519_PUBLIC_KEY: ${{ vars.RUSTDESK_UPDATE_ED25519_PUBLIC_KEY }}
+        run: |
+          python res/update/generate_update_metadata.py check-key
+          common=(--version "$V" --release-id "$V" --package-id rustdesk --release-base-url "$CDN/releases")
+          python res/update/generate_update_metadata.py sign "${common[@]}" \
+            --artifact windows x86_64 exe "out/kozysupport-$V-x86_64.exe" \
+            --artifact macos aarch64 dmg "out/kozysupport-$V-aarch64.dmg" \
+            --artifact macos x86_64 dmg "out/kozysupport-$V-x86_64.dmg" \
+            --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --metadata-out out/rustdesk-update.json --signature-out out/rustdesk-update.json.sig
+          python res/update/generate_update_metadata.py verify "${common[@]}" \
+            --metadata out/rustdesk-update.json --signature out/rustdesk-update.json.sig \
+            --artifact "out/kozysupport-$V-x86_64.exe" \
+            --artifact "out/kozysupport-$V-aarch64.dmg" \
+            --artifact "out/kozysupport-$V-x86_64.dmg"
+          ls -l out
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::848049623515:role/kozy-prod-kozysupport-publish
+          role-session-name: kozysupport-${{ github.run_id }}
+          allowed-account-ids: "848049623515"
+      - name: Upload the release
+        run: |
+          for f in out/*; do
+            aws s3 cp "$f" "$BUCKET/releases/$V/$(basename "$f")" --only-show-errors \
+              --cache-control "public, max-age=86400, immutable"
+          done
+      - name: Update the stable download links
+        run: |
+          link() {
+            aws s3 cp "out/$1" "$BUCKET/$2" --only-show-errors --cache-control "public, max-age=300" \
+              --content-disposition "attachment; filename=\"$2\""
+          }
+          link "kozysupport-$V-x86_64.exe" KozySupport.exe
+          link "kozysupport-$V-aarch64.dmg" KozySupport-mac-apple-silicon.dmg
+          link "kozysupport-$V-x86_64.dmg" KozySupport-mac-intel.dmg
+          link "kozysupport-$V-x86_64.deb" kozysupport.deb
+          link "kozysupport-$V-x86_64.rpm" kozysupport.rpm
+      # Last, because it is the switch: installed clients update to whatever
+      # this points at within a day.
+      - name: Point clients at the release
+        run: |
+          jq -n --arg url "$CDN/releases/$V" '{url: $url}' > latest.json
+          aws s3 cp latest.json "$BUCKET/latest.json" --only-show-errors \
+            --content-type application/json --cache-control "public, max-age=300"
+          echo "Published KozySupport $V: $CDN/releases/$V/" >> "$GITHUB_STEP_SUMMARY"
