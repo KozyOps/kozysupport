@@ -41,6 +41,10 @@ def windows():
     edit("flutter/windows/runner/Runner.rc",
          ('"ProductName", "RustDesk"', f'"ProductName", "{NAME}"'),
          ('"FileDescription", "RustDesk Remote Desktop"', f'"FileDescription", "{NAME} Remote Support"'))
+    # The downloadable exe is the self-extracting packer, which has its own version info.
+    edit("libs/portable/Cargo.toml",
+         ('ProductName = "RustDesk"', f'ProductName = "{NAME}"'),
+         ('FileDescription = "RustDesk Remote Desktop"', f'FileDescription = "{NAME} Remote Support"'))
 
 
 def macos():
