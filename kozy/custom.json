@@ -1,0 +1,11 @@
+{
+  "app-name": "KozySupport",
+  "override-settings": {
+    "custom-rendezvous-server": "rustdesk.kozyops.com",
+    "key": "pD+UB+PzBTnJRvQEUGfnwg2N9cxz3ZUYm1d4JHQZzxY=",
+    "hide-server-settings": "Y"
+  },
+  "default-settings": {
+    "allow-auto-update": "Y"
+  }
+}
