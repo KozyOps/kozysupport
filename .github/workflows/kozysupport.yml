@@ -262,7 +262,7 @@ jobs:
       matrix:
         include:
           - { arch: x86_64, target: x86_64-apple-darwin, os: macos-15-intel, build-args: "" }
-          - { arch: aarch64, target: aarch64-apple-darwin, os: macos-14, build-args: "--screencapturekit" }
+          - { arch: aarch64, target: aarch64-apple-darwin, os: macos-15, build-args: "--screencapturekit" }
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       FLUTTER_VERSION: ${{ needs.plan.outputs.flutter }}
