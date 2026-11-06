@@ -73,10 +73,11 @@ jobs:
           filter: blob:none
           persist-credentials: false
       - name: Apply KozySupport commits
+        id: apply
         if: steps.target.outputs.build == 'true'
         run: kozy/apply.sh "${{ steps.target.outputs.tag }}"
       - name: Open an issue when the commits no longer apply
-        if: failure() && steps.target.outputs.build == 'true'
+        if: failure() && steps.apply.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.target.outputs.tag }}
@@ -104,12 +105,12 @@ jobs:
           } | tee -a "$GITHUB_OUTPUT"
       - name: Package the source
         if: steps.target.outputs.build == 'true'
-        run: tar --exclude=.git -czf "kozysupport-${{ steps.versions.outputs.version }}-source.tar.gz" .
+        run: tar --exclude=.git -czf "$RUNNER_TEMP/kozysupport-${{ steps.versions.outputs.version }}-source.tar.gz" .
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.target.outputs.build == 'true'
         with:
           name: source
-          path: kozysupport-*-source.tar.gz
+          path: ${{ runner.temp }}/kozysupport-*-source.tar.gz
           if-no-files-found: error
 
   bridge:
