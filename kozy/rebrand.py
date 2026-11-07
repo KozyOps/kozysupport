@@ -72,6 +72,12 @@ def linux():
     s = re.sub(r"(?m)^URL:.*$", "URL:        https://kozyops.com", s)
     s = re.sub(r"(?m)^Vendor:.*$", "Vendor:     KozyOps <support@kozyops.com>", s)
     spec.write_text(s, encoding="utf-8")
+    Path("res/pacman_install").write_text(rename_all(Path("res/pacman_install").read_text(encoding="utf-8")), encoding="utf-8")
+    pkg = Path("res/PKGBUILD")
+    s = rename_all(pkg.read_text(encoding="utf-8"))
+    s = re.sub(r'(?m)^pkgdesc=.*$', f'pkgdesc="{NAME} remote support by KozyOps"', s)
+    s = re.sub(r'(?m)^url=.*$', 'url="https://kozyops.com"', s)
+    pkg.write_text(s, encoding="utf-8")
 
     # build.py also names the Rust library and cargo targets, so only the two
     # functions that lay out the .deb are renamed.
