@@ -24,13 +24,13 @@ The client can't be pointed at RustDesk's public server, and it ignores a `custo
 
 1. **plan:** picks the latest upstream release and skips the run if `cdn.kozyops.com` already serves it. It applies this branch's commits onto that tag with `kozy/apply.sh`, or opens an issue if they don't apply cleanly.
 2. **bridge, windows, macos, linux:** build the installers. You can download them from the run page to test.
-3. **publish:** waits for approval on the `release` environment, then:
+3. **publish:** runs in the `release` environment, with no approval step, and:
    - signs `rustdesk-update.json`
    - uploads everything to `releases/<version>/`
    - updates the stable links (`KozySupport.exe`, `KozySupport-mac-apple-silicon.dmg`, `kozysupport.deb`, `kozysupport.rpm`, `kozysupport.pkg.tar.zst`)
    - rewrites `latest.json` last
 
-**Approving `publish` updates every installed client within a day.** Before you approve, install the build on one Windows machine and one Mac and confirm it connects.
+**A new upstream release reaches every installed client within about two days, unattended:** the build runs the morning after upstream tags it, and clients check for updates daily. To hold a release back, disable the workflow, or add a required reviewer to the `release` environment again.
 
 To rebuild after changing this branch, start the workflow by hand with the upstream tag.
 

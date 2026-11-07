@@ -1,15 +1,16 @@
 # KozySupport: build the branded client from an upstream RustDesk release plus
-# the commits on the kozy branch, then publish it to cdn.kozyops.com after a
-# human approves. See kozy/README.md.
+# the commits on the kozy branch, then publish it to cdn.kozyops.com. See
+# kozy/README.md.
 #
 #   schedule          daily: builds the latest upstream release if it is not
 #                     what cdn.kozyops.com already serves
 #   workflow_dispatch builds any upstream tag, e.g. to rebuild after a change
 #                     to the kozy branch
 #
-# Nothing reaches customers until the `publish` job's `release` environment is
-# approved. Installers from the build jobs are on the run page for testing
-# first.
+# Publishing is unattended: a new upstream release reaches customers within a
+# day with no approval. The `release` environment has no reviewers; it stays
+# because the AWS role trusts only that environment, and only the kozy branch
+# may deploy to it.
 name: KozySupport
 
 on:
