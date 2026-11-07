@@ -26,7 +26,7 @@ The client can't be pointed at RustDesk's public server, and it ignores a `custo
 3. **publish:** waits for approval on the `release` environment, then:
    - signs `rustdesk-update.json`
    - uploads everything to `releases/<version>/`
-   - updates the stable links (`KozySupport.exe`, `KozySupport-mac-apple-silicon.dmg`, `KozySupport-mac-intel.dmg`, `kozysupport.deb`, `kozysupport.rpm`)
+   - updates the stable links (`KozySupport.exe`, `KozySupport-mac-apple-silicon.dmg`, `kozysupport.deb`, `kozysupport.rpm`)
    - rewrites `latest.json` last
 
 **Approving `publish` updates every installed client within a day.** Before you approve, install the build on one Windows machine and one Mac and confirm it connects.

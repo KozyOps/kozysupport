@@ -261,7 +261,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x86_64, target: x86_64-apple-darwin, os: macos-15-intel, build-args: "" }
           - { arch: aarch64, target: aarch64-apple-darwin, os: macos-15, build-args: "--screencapturekit" }
     env:
       VERSION: ${{ needs.plan.outputs.version }}
@@ -526,14 +525,12 @@ jobs:
           python res/update/generate_update_metadata.py sign "${common[@]}" \
             --artifact windows x86_64 exe "out/kozysupport-$V-x86_64.exe" \
             --artifact macos aarch64 dmg "out/kozysupport-$V-aarch64.dmg" \
-            --artifact macos x86_64 dmg "out/kozysupport-$V-x86_64.dmg" \
             --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --metadata-out out/rustdesk-update.json --signature-out out/rustdesk-update.json.sig
           python res/update/generate_update_metadata.py verify "${common[@]}" \
             --metadata out/rustdesk-update.json --signature out/rustdesk-update.json.sig \
             --artifact "out/kozysupport-$V-x86_64.exe" \
-            --artifact "out/kozysupport-$V-aarch64.dmg" \
-            --artifact "out/kozysupport-$V-x86_64.dmg"
+            --artifact "out/kozysupport-$V-aarch64.dmg"
           ls -l out
       - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
@@ -555,7 +552,6 @@ jobs:
           }
           link "kozysupport-$V-x86_64.exe" KozySupport.exe
           link "kozysupport-$V-aarch64.dmg" KozySupport-mac-apple-silicon.dmg
-          link "kozysupport-$V-x86_64.dmg" KozySupport-mac-intel.dmg
           link "kozysupport-$V-x86_64.deb" kozysupport.deb
           link "kozysupport-$V-x86_64.rpm" kozysupport.rpm
       # Last, because it is the switch: installed clients update to whatever
