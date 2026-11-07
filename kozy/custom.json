@@ -3,7 +3,8 @@
   "override-settings": {
     "custom-rendezvous-server": "rustdesk.kozyops.com",
     "key": "pD+UB+PzBTnJRvQEUGfnwg2N9cxz3ZUYm1d4JHQZzxY=",
-    "hide-server-settings": "Y"
+    "hide-server-settings": "Y",
+    "api-server": "https://rustdesk.kozyops.com"
   },
   "default-settings": {
     "allow-auto-update": "Y"

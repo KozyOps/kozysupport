@@ -13,6 +13,7 @@ Every change sits on the `kozy` branch, as a few commits on top of the upstream 
 | App name, ID server, key and locked server settings are compiled in, replacing RustDesk's signed `custom.txt`. Upstream's custom-client code applies them. | `kozy/custom.json`, `src/kozy.rs`, hook in `common::load_custom_client` |
 | The updater reads `cdn.kozyops.com/public/remote-support/latest.json`. It downloads from `.../releases/<version>/` and trusts only our ed25519 update key. | `common.rs` (`do_check_software_update`, `release_id_from_update_url`), `src/updater/artifact.rs`, `src/update_metadata.rs` |
 | Auto-update is on by default. It also works on macOS, which upstream disables for custom clients. | `kozy/custom.json`, `src/updater.rs`, `desktop_setting_page.dart` |
+| Technician login, address book and audit log use our API server at `https://rustdesk.kozyops.com` (lejianwen/rustdesk-api, sign-in with kozyops.com Google accounts). Sessions don't send the login token to `hbbs`: the open-source `hbbs` ignores it and has no key exchange, so sending it stalled every connect for 18 seconds. | `kozy/custom.json` (`api-server`), `Client::start` in `src/client.rs` |
 | Bundle, package and binary names: `KozySupport.app`, `kozysupport.deb` / `.rpm`, `kozysupport.service`. These are rewritten at build time, not committed. | `kozy/rebrand.py` |
 
 The client can't be pointed at RustDesk's public server, and it ignores a `custom.txt` file.

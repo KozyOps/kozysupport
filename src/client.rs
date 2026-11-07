@@ -386,6 +386,11 @@ impl Client {
         (i32, String),
     )> {
         debug_assert!(peer == interface.get_id());
+        // kozy: our hbbs is the OSS build, which has no key exchange and ignores this API
+        // token. Sending it makes every connect wait READ_TIMEOUT (18s) for an exchange that
+        // never comes, then send the token unencrypted anyway.
+        let _ = token;
+        let token = "";
         interface.update_direct(None);
         interface.update_received(false);
         match Self::_start(peer, key, token, conn_type, interface.clone()).await {

@@ -62,5 +62,13 @@ mod tests {
             Some("rustdesk.kozyops.com")
         );
         assert!(overrides.contains_key("key"));
+        drop(overrides);
+        assert_eq!(
+            crate::common::get_api_server(
+                hbb_common::config::Config::get_option("api-server"),
+                hbb_common::config::Config::get_option("custom-rendezvous-server"),
+            ),
+            "https://rustdesk.kozyops.com"
+        );
     }
 }
