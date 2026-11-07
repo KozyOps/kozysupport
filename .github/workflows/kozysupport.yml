@@ -487,7 +487,7 @@ jobs:
       - name: Check the Arch package carries the KozySupport names
         run: |
           pkg="kozysupport-${VERSION}-x86_64.pkg.tar.zst"
-          mv res/kozysupport-*.pkg.tar.zst "$pkg"
+          mv res/kozysupport-[0-9]*.pkg.tar.zst "$pkg"  # not the -debug package makepkg also writes
           files="$(tar -tf "$pkg")"
           for f in usr/share/kozysupport/kozysupport usr/bin/kozysupport usr/share/kozysupport/files/kozysupport.service .INSTALL; do
             grep -qx "$f" <<<"$files" || { echo "::error::$pkg is missing $f"; exit 1; }
