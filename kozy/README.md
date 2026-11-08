@@ -15,6 +15,7 @@ Every change sits on the `kozy` branch, as a few commits on top of the upstream 
 | Auto-update is on by default. It also works on macOS, which upstream disables for custom clients. | `kozy/custom.json`, `src/updater.rs`, `desktop_setting_page.dart` |
 | Technician login, address book and audit log use our API server at `https://rustdesk.kozyops.com` (lejianwen/rustdesk-api, sign-in with kozyops.com Google accounts). Sessions don't send the login token to `hbbs`: the open-source `hbbs` ignores it and has no key exchange, so sending it stalled every connect for 18 seconds. | `kozy/custom.json` (`api-server`), `Client::start` in `src/client.rs` |
 | Bundle, package and binary names: `KozySupport.app`, `kozysupport.deb` / `.rpm` / `.pkg.tar.zst`, `kozysupport.service`. These are rewritten at build time, not committed. | `kozy/rebrand.py` |
+| Icons: the app, installer, Windows tray and macOS menu-bar icons, and the in-app logo, all use the KozyOps mark. `kozy/brand/make.sh` generates them from the mark and they are committed. `rebrand.py` copies them over upstream's at build time and points the Linux window at the `kozysupport` icon. | `kozy/brand/`, `kozy/rebrand.py` |
 
 The client can't be pointed at RustDesk's public server, and it ignores a `custom.txt` file.
 

@@ -11,6 +11,7 @@ upstream rebases free of conflicts in files upstream edits every release.
 Usage: python3 kozy/rebrand.py windows|macos|linux
 """
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -32,6 +33,31 @@ def edit(path, *pairs, regex=False, count=None):
 
 def rename_all(s):
     return s.replace("rustdesk", LOWER).replace("RustDesk", NAME)
+
+
+# kozy/brand/<file> -> the upstream files it replaces. kozy/brand/make.sh makes them.
+ICONS = {
+    "icon.ico": ["res/icon.ico", "flutter/windows/runner/resources/app_icon.ico"],
+    "tray-icon.ico": ["res/tray-icon.ico"],
+    "icon.png": ["res/icon.png"],
+    "mac-icon.png": ["res/mac-icon.png"],
+    "AppIcon.icns": ["flutter/macos/Runner/AppIcon.icns"],
+    "mac-tray-dark-x2.png": ["res/mac-tray-dark-x2.png"],
+    "32x32.png": ["res/32x32.png"],
+    "64x64.png": ["res/64x64.png"],
+    "128x128.png": ["res/128x128.png"],
+    "128x128@2x.png": ["res/128x128@2x.png"],
+    "scalable.svg": ["res/scalable.svg"],
+    "icon.svg": ["flutter/assets/icon.svg"],
+}
+
+
+def icons():
+    for src, dests in ICONS.items():
+        for dest in dests:
+            if not Path(dest).is_file():
+                sys.exit(f"rebrand: upstream no longer has {dest}; update ICONS")
+            shutil.copyfile(Path("kozy/brand") / src, dest)
 
 
 def windows():
@@ -58,6 +84,9 @@ def macos():
 
 def linux():
     edit("flutter/linux/CMakeLists.txt", ('set(BINARY_NAME "rustdesk")', f'set(BINARY_NAME "{LOWER}")'))
+    # The window icon is looked up by the name the packages install it under.
+    edit("flutter/linux/my_application.cc",
+         ('gtk_icon_theme_load_icon(theme, "rustdesk"', f'gtk_icon_theme_load_icon(theme, "{LOWER}"'), count=1)
 
     # Packaging files: every rustdesk in them is the package, service, binary
     # or desktop entry name. None of them names the Rust library.
@@ -98,5 +127,6 @@ if __name__ == "__main__":
     targets = {"windows": windows, "macos": macos, "linux": linux}
     if len(sys.argv) != 2 or sys.argv[1] not in targets:
         sys.exit(__doc__)
+    icons()
     targets[sys.argv[1]]()
     print(f"rebrand: {sys.argv[1]} done")
